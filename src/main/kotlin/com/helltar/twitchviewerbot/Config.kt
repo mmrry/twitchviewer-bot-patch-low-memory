@@ -47,6 +47,13 @@ object Config {
             password = readEnv("DATABASE_PASSWORD")
         )
 
+    // server-wide cap on simultaneous recordings (each is a streamlink + ffmpeg pair); optional, defaults to 2
+    val maxConcurrentClips: Int =
+        dotenv["MAX_CONCURRENT_CLIPS"]?.trim()?.takeIf { it.isNotEmpty() }?.let { value ->
+            value.toIntOrNull()?.takeIf { it in 1..20 }
+                ?: throw IllegalArgumentException("MAX_CONCURRENT_CLIPS must be a number from 1 to 20, but was: $value")
+        } ?: 2
+
     private fun readEnv(env: String) =
         dotenv[env]?.ifBlank { throw IllegalArgumentException("$env must not be empty") }
             ?: throw IllegalArgumentException("$env environment variable is not set")

@@ -7,6 +7,7 @@ import com.helltar.twitchviewerbot.commands.TwitchCommand
 import com.helltar.twitchviewerbot.coroutines.runCatchingPreservingCancellation
 import com.helltar.twitchviewerbot.database.dao.usersDao
 import com.helltar.twitchviewerbot.media.ClipFormat
+import com.helltar.twitchviewerbot.media.ClipSlots
 import com.helltar.twitchviewerbot.media.ClipProcesses.ffmpegExtractAudio
 import com.helltar.twitchviewerbot.media.ClipProcesses.ffmpegPrepareClip
 import com.helltar.twitchviewerbot.media.ClipProcesses.kill
@@ -31,7 +32,6 @@ class ClipCommand(
 ) : TwitchCommand(botContext) {
 
     private companion object {
-        const val MAX_CONCURRENT_CLIPS = 3
         const val DEFAULT_CLIP_DURATION_SEC = 30L
 
         // Bot API rejects uploads over 50 MB; decimal megabytes to stay under the limit regardless of how Telegram counts
@@ -115,7 +115,7 @@ class ClipCommand(
         fetchAndSendClips(listOf(channel))
 
     private suspend fun retrieveAndSendClips(streams: List<StreamInfo>) = coroutineScope {
-        streams.chunked(MAX_CONCURRENT_CLIPS).forEach { chunk ->
+        streams.chunked(ClipSlots.limit).forEach { chunk ->
             ensureActive()
             processClipBatch(chunk)
         }
@@ -125,10 +125,19 @@ class ClipCommand(
         val channelLinks = chunk.joinToString { it.login.toTwitchHtmlLink(it.username) }
         val statusMessageId = replyToMessage(localizedString(startMessageKey()).format(channelLinks, clipDurationSec))
 
+        // only a hint for the user: another request can grab or free a slot right after this check,
+        // the semaphore below is what actually enforces the limit
+        val queueMessageId =
+            if (ClipSlots.available < chunk.size) {
+                log.info { "all ${ClipSlots.limit} clip slots busy, user-$userId queued ${chunk.size} clip(s)" }
+                replyToMessage(localizedString(Localization.CLIP_SLOTS_BUSY).format(ClipSlots.limit))
+            } else
+                null
+
         val jobs =
             chunk.map { stream ->
                 launch {
-                    downloadAndSendClip(stream)
+                    ClipSlots.withSlot { downloadAndSendClip(stream) }
                 }
             }
 
@@ -141,6 +150,7 @@ class ClipCommand(
                 processes.clear()
             }
             deleteMessageAsync(statusMessageId)
+            queueMessageId?.let { deleteMessageAsync(it) }
         }
     }
 
